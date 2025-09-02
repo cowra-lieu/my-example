@@ -63,3 +63,15 @@ management:
     health:
       show-details: always
 
+# 自定义配置
+sql-tree:
+  # 慢SQL阈值(毫秒)
+  slow-sql-threshold: 1
+  # 是否启用SQL追踪
+  trace-enabled: true
+  # 最大调用深度
+  max-depth: 50
+  # 最大会话数量
+  max-sessions: 100
+  # 是否记录SQL参数
+  record-parameters: true
