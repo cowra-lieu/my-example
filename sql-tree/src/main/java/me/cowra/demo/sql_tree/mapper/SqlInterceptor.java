@@ -2,10 +2,12 @@ package me.cowra.demo.sql_tree.mapper;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import me.cowra.demo.sql_tree.model.SqlNode;
 import org.apache.ibatis.executor.Executor;
 import org.apache.ibatis.executor.statement.StatementHandler;
 import org.apache.ibatis.mapping.BoundSql;
 import org.apache.ibatis.mapping.MappedStatement;
+import org.apache.ibatis.mapping.ParameterMapping;
 import org.apache.ibatis.mapping.SqlCommandType;
 import org.apache.ibatis.plugin.*;
 import org.apache.ibatis.reflection.MetaObject;
@@ -15,6 +17,8 @@ import org.apache.ibatis.session.RowBounds;
 import org.springframework.stereotype.Component;
 
 import java.sql.Connection;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Properties;
 
 /**
@@ -177,12 +181,121 @@ public class SqlInterceptor implements Interceptor {
         MappedStatement mappedStatement = (MappedStatement) args[0];
         Object parameter = args[1];
 
-        // 获取SQL信息
+        //* 获取SQL信息
         BoundSql boundSql = mappedStatement.getBoundSql(parameter);
         String sql = boundSql.getSql();
         SqlCommandType sqlCommandType = mappedStatement.getSqlCommandType();
 
+        SqlNode sqlNode = createSqlNode(sql, sqlCommandType.name(), boundSql, parameter);
 
+        Object result;
+        String errorMessage = null;
+        int affectedRows = 0;
+        try {
+            result = invocation.proceed();
+            if (result instanceof List) {
+                affectedRows = ((List<?>)result).size();
+            } else if (result instanceof Integer) {
+                affectedRows = (Integer)result;
+            }
+        } catch (Exception e) {
+            errorMessage = e.getMessage();
+            log.error("SQL Execution Exception: {}", sql, e);
+            throw e;
+        } finally {
+            sqlCallTreeContext.exit(sqlNode, affectedRows, errorMessage);
+        }
+        return result;
+    }
+
+    private SqlNode createSqlNode(String sql, String sqlType, BoundSql boundSql, Object parameter) {
+        try {
+            SqlNode sqlNode = sqlCallTreeContext.enter(sql, sqlType);
+            if (sqlNode != null) {
+                List<Object> parameters = extractParameters(boundSql, parameter);
+                sqlNode.setParameters(parameters);
+
+                String formattedSql = formatSqlWithParameters(sql, parameters);
+                sqlNode.setFormattedSql(formattedSql);
+
+                log.debug("Create SQL Node: type={}, depth={}, sql={}", sqlType, sqlNode.getDepth(), sql);
+            }
+            return sqlNode;
+        } catch (Exception e) {
+            log.error("Failed to create SqlNode", e);
+            return null;
+        }
+    }
+
+    /**
+     * 格式化SQL语句，替换参数占位符
+     * @param sql 原始SQL
+     * @param parameters 参数列表
+     * @return 格式化后的SQL
+     */
+    private String formatSqlWithParameters(String sql, List<Object> parameters) {
+        if (sql == null || parameters == null || parameters.isEmpty())
+            return sql;
+
+        StringBuilder sb = new StringBuilder(sql);
+        try {
+            for (Object parameter : parameters) {
+                String value;
+                if (parameter == null) {
+                    value = "NULL";
+                } else if (parameter instanceof String) {
+                    value = "'" + parameter.toString().replace("'", "''") + "'";
+                } else if (parameter instanceof java.util.Date) {
+                    value = "'" + parameter + "'";
+                } else {
+                    value = parameter.toString();
+                }
+                int index = sb.indexOf("?");
+                if (index != -1) {
+                    sb.replace(index, index+1, value);
+                } else {
+                    break;
+                }
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            log.warn("Failed to format SQL with parameters", e);
+            return sql;
+        }
+    }
+
+    /**
+     * 提取SQL参数
+     * @param boundSql BoundSql对象
+     * @param parameter 参数对象
+     * @return 参数列表
+     */
+    private List<Object> extractParameters(BoundSql boundSql, Object parameter) {
+        List<Object> parameters = new ArrayList<>();
+        try {
+            List<ParameterMapping> parameterMappings = boundSql.getParameterMappings();
+            if (parameterMappings != null && !parameterMappings.isEmpty() && parameter != null) {
+                MetaObject metaObject = SystemMetaObject.forObject(parameter);
+                for (ParameterMapping parameterMapping : parameterMappings) {
+                    String propertyName = parameterMapping.getProperty();
+                    Object value;
+                    if (metaObject.hasGetter(propertyName)) {
+                        value = metaObject.getValue(propertyName);
+                    } else if (boundSql.hasAdditionalParameter(propertyName)) {
+                        //! 不在原始参数对象（parameter）中直接存在，但被 MyBatis 动态添加到 BoundSql中的额外参数
+                        //! 比如 <foreach> 标签生成的参数
+                        value = boundSql.getAdditionalParameter(propertyName);
+                    } else {
+                        value = null;
+                    }
+                    parameters.add(value);
+                }
+            }
+
+        } catch (Exception e) {
+            log.warn("Failed to extract parameters of SQL", e);
+        }
+        return parameters;
     }
 
 

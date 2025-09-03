@@ -1,2 +1,8 @@
+### Get all users
 GET http://localhost:8080/api/users
+Accept: application/json
 
+
+### Get user details with orders
+GET http://localhost:8080/api/users/1
+Accept: application/json
